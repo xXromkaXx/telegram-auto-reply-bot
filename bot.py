@@ -4,6 +4,8 @@ from telethon.tl.functions.account import UpdateStatusRequest
 from datetime import datetime, timedelta
 from telethon.sessions import StringSession
 import asyncio
+import os
+
 import re
 
 API_ID = 39858841
