@@ -2,14 +2,15 @@ from telethon import TelegramClient, events
 from telethon.tl.types import UserStatusOnline, UserStatusOffline
 from telethon.tl.functions.account import UpdateStatusRequest
 from datetime import datetime, timedelta
+from telethon.sessions import StringSession
 import asyncio
 import re
 
 API_ID = 39858841
 API_HASH = 'de06619decf663b5ef5cba304cb04d5e'
-PHONE = '+380684214577'
 
-client = TelegramClient('my_session', API_ID, API_HASH)
+
+SESSION_STRING = os.getenv("SESSION_STRING")
 
 # ===== СТАНИ =====
 last_reply_time = {}
@@ -18,7 +19,11 @@ is_online = False
 me = None
 
 GREETINGS = re.compile(r'\b(привіт|вітаю|hello|hi|hey|ку)\b', re.IGNORECASE)
-
+client = TelegramClient(
+    StringSession(SESSION_STRING),
+    API_ID,
+    API_HASH
+)
 
 # ===== Перевірка: чи новий чат (у чаті ще НЕМА твоїх повідомлень)
 async def is_new_chat(chat_id):
@@ -115,7 +120,7 @@ async def auto_reply_handler(event):
 async def main():
     global me
 
-    await client.start(phone=PHONE)
+    await client.start() 
     me = await client.get_me()
 
     print(f"✅ Увійшов як: {me.first_name}")
