@@ -1,0 +1,11 @@
+version: 1
+services:
+  bot:
+    image: python:3.11
+    command: python bot.py
+    volumes:
+      - .:/app
+    working_dir: /app
+    env:
+      - PYTHONUNBUFFERED=1
+    ports: []
