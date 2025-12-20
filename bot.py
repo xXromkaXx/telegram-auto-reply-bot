@@ -101,7 +101,7 @@ async def auto_reply_handler(event):
        
         
         # Якщо повідомлення містить вітання
-        elif GREETINGS.search(text):
+        if GREETINGS.search(text):
             reply_text = "Привіт! Зараз зайнятий, відпишу пізніше ✌️"
         
         # Інакше - без вітання
