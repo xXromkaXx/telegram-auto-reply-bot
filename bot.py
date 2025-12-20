@@ -18,7 +18,7 @@ is_online = False
 me = None
 
 GREETINGS = re.compile(r'\b(привіт|вітаю|hello|hi|hey|ку|доброго дня|день добрий|добрий вечір)\b', re.IGNORECASE)
-DAIVINCHIK = re.compile(r'\(bдайвінчик|Дайвінчика)\b', re.IGNORECASE)
+DAIVINCHIK = re.compile(r'\b(дайвінчик|Дайвінчика)\b', re.IGNORECASE)
 
 client = TelegramClient(
     StringSession(SESSION_STRING),
