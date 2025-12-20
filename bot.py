@@ -5,13 +5,10 @@ from datetime import datetime, timedelta
 from telethon.sessions import StringSession
 import asyncio
 import os
-
 import re
 
 API_ID = 39858841
 API_HASH = 'de06619decf663b5ef5cba304cb04d5e'
-
-
 SESSION_STRING = os.getenv("SESSION_STRING")
 
 # ===== СТАНИ =====
@@ -20,7 +17,9 @@ blocked_chats = set()   # чати, де бот вже відповів
 is_online = False
 me = None
 
-GREETINGS = re.compile(r'\b(привіт|вітаю|hello|hi|hey|ку)\b', re.IGNORECASE)
+GREETINGS = re.compile(r'\b(привіт|вітаю|hello|hi|hey|ку|доброго дня|день добрий|добрий вечір)\b', re.IGNORECASE)
+DAIVINCHIK = re.compile(r'\bДайвінчика\b', re.IGNORECASE)
+
 client = TelegramClient(
     StringSession(SESSION_STRING),
     API_ID,
@@ -72,7 +71,8 @@ async def auto_reply_handler(event):
 
     chat_id = event.chat_id
     sender_id = event.sender_id
-    text = event.text.lower()
+    text = event.text
+    text_lower = text.lower()
     now = datetime.now()
 
     # ❌ Бот уже відповідав у цьому чаті
@@ -84,19 +84,31 @@ async def auto_reply_handler(event):
         if now - last_reply_time[sender_id] < timedelta(minutes=1):
             return
 
-    # 🆕 ЛОГІКА НОВОГО ЧАТУ
-    if await is_new_chat(chat_id):
-        reply_text = (
-            "Привіт! 👋\n"
-            "Зараз мене немає онлайн, але я обов’язково відповім трохи пізніше 😊"
-        )
-    else:
-        if GREETINGS.search(text):
-            reply_text = "Привіт! 👋 Зараз зайнятий, відпишу пізніше ✌️"
+    # ===== ОСНОВНА ЛОГІКА =====
+    # Перевірка чи новий чат
+    is_new = await is_new_chat(chat_id)
+    
+    # Якщо новий чат (перше повідомлення від користувача)
+    if is_new:
+        # Якщо є слово "дайвінчик" - спеціальна відповідь
+        if DAIVINCHIK.search(text):
+            reply_text = "Привіт! Бачу ти з  дайвінчика 😊 Рома зараз відпочиває, але скоро буде з тобою!"
+        else:
+            # Стандартна відповідь для нового чату
+            reply_text = "Привіт! Я зараз зайнятий, надіюсь не срочне повідомлення. Відповім як зможу!"
+    
+    else:  # Чат вже існуючий (не новий)
+       
+        
+        # Якщо повідомлення містить вітання
+        elif GREETINGS.search(text):
+            reply_text = "Привіт! Зараз зайнятий, відпишу пізніше ✌️"
+        
+        # Інакше - без вітання
         else:
             reply_text = "Зараз зайнятий, відпишу пізніше ✌️"
 
-    print(f"⏰ Відповідаю {sender_id} через 1 хв...")
+    print(f"⏰ Відповідаю {sender_id} через 1 хв... (новий чат: {is_new})")
     await asyncio.sleep(60)
 
     try:
@@ -113,6 +125,7 @@ async def auto_reply_handler(event):
         blocked_chats.add(chat_id)
 
         print(f"✅ Відповів і повернув OFFLINE (чат {chat_id})")
+        print(f"📝 Текст відповіді: {reply_text}")
 
     except Exception as e:
         print(f"❌ Помилка: {e}")
@@ -127,7 +140,6 @@ async def main():
 
     print(f"✅ Увійшов як: {me.first_name}")
     print("🤖 AFK-бот активний")
-    print("📌 1 відповідь → мовчить → твій меседж → знов активний")
 
     await client.run_until_disconnected()
 
