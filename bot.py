@@ -57,7 +57,11 @@ async def has_my_messages(chat_id):
 # ===== ONLINE / OFFLINE статус
 @client.on(events.UserUpdate)
 async def user_status_handler(event):
-    global is_online
+    global is_online, me
+
+    # Якщо me ще не ініціалізовано, пропускаємо
+    if me is None:
+        return
 
     if event.user_id != me.id:
         return
