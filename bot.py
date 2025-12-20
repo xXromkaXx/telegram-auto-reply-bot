@@ -16,6 +16,7 @@ last_reply_time = {}
 blocked_chats = set()   # чати, де бот вже відповів
 is_online = False
 me = None
+scheduled_messages = {}  # заплановані повідомлення: {chat_id: task}
 
 GREETINGS = re.compile(r'\b(привіт|вітаю|hello|hi|hey|ку|доброго дня|день добрий|добрий вечір)\b', re.IGNORECASE)
 DAIVINCHIK = re.compile(r'\b(дайвінчик|Дайвінчика)\b', re.IGNORECASE)
@@ -36,7 +37,6 @@ async def has_my_messages(chat_id):
         # Шукаємо останні 100 повідомлень в чаті від мене
         async for message in client.iter_messages(chat_id, limit=100, from_user='me'):
             if message.out:  # Якщо це моє повідомлення
-                print(f"✅ В чаті {chat_id} знайдено моє повідомлення (ID: {message.id})")
                 return True
     except Exception as e:
         print(f"⚠️ Помилка перевірки чату {chat_id}: {e}")
@@ -64,7 +64,16 @@ async def user_status_handler(event):
 
     if isinstance(event.status, UserStatusOnline):
         is_online = True
-        print("🟢 ONLINE — бот мовчить")
+        print("🟢 ONLINE — бот мовчить і скасовує заплановані повідомлення")
+        
+        # Скасовуємо всі заплановані повідомлення
+        for chat_id, task in list(scheduled_messages.items()):
+            if not task.done():
+                task.cancel()
+                print(f"❌ Скасовано заплановане повідомлення для чату {chat_id}")
+        
+        # Очищаємо словник
+        scheduled_messages.clear()
 
     elif isinstance(event.status, UserStatusOffline):
         is_online = False
@@ -79,7 +88,13 @@ async def my_message_handler(event):
         if chat_id in blocked_chats:
             blocked_chats.remove(chat_id)
             print(f"🔓 Чат {chat_id} розблоковано (ти написав)")
-
+# Скасовуємо заплановане повідомлення для цього чату (якщо є)
+        if chat_id in scheduled_messages:
+            task = scheduled_messages[chat_id]
+            if not task.done():
+                task.cancel()
+                print(f"❌ Скасовано заплановане повідомлення для чату {chat_id} (ти написав)")
+            del scheduled_messages[chat_id]
 
 # ===== Автовідповіді
 @client.on(events.NewMessage(incoming=True))
@@ -121,8 +136,6 @@ async def auto_reply_handler(event):
             reply_text = "Привіт! Я зараз зайнятий, надіюсь не срочне повідомлення. Відповім як зможу!"
     
     else:  # Чат вже існуючий (я колись в ньому писав)
-     
-      
         # Якщо повідомлення містить вітання
         if GREETINGS.search(text):
             reply_text = "Привіт! Зараз зайнятий, відпишу пізніше ✌️"
@@ -131,26 +144,57 @@ async def auto_reply_handler(event):
             reply_text = "Зараз зайнятий, відпишу пізніше ✌️"
 
     print(f"⏰ Відповідаю {sender_id} через 1 хв...")
-    await asyncio.sleep(60)
+    # Створюємо асинхронну задачу для відправки через 1 хвилину
+    async def send_delayed_message():
+        try:
+            # Перевіряємо кожні 5 секунд, чи не став я онлайн
+            for i in range(12):  # 12 * 5 секунд = 60 секунд
+                await asyncio.sleep(5)
+                if is_online:
+                    print(f"🚫 Скасовано відправку для чату {chat_id} (я став ONLINE)")
+                    if chat_id in scheduled_messages:
+                        del scheduled_messages[chat_id]
+                    return
+            
+            # Перевіряємо ще раз перед відправкою
+            if is_online:
+                print(f"🚫 Не відправляю повідомлення в чат {chat_id} (я ONLINE)")
+                return
+                
+            # Перевіряємо, чи чат все ще не заблокований
+            if chat_id in blocked_chats:
+                print(f"🚫 Чат {chat_id} вже заблокований")
+                return
+            
+            print(f"📤 Надсилаю заплановане повідомлення для {sender_id}")
+            
+            await client.send_message(
+                sender_id,
+                reply_text,
+                reply_to=event.message.id
+            )
 
-    try:
-        await client.send_message(
-            sender_id,
-            reply_text,
-            reply_to=event.message.id
-        )
+            # 🔥 Повертаємо OFFLINE (Telegram сам робить ONLINE на мить)
+            await client(UpdateStatusRequest(offline=True))
 
-        # 🔥 Повертаємо OFFLINE (Telegram сам робить ONLINE на мить)
-        await client(UpdateStatusRequest(offline=True))
+            last_reply_time[sender_id] = datetime.now()
+            blocked_chats.add(chat_id)
 
-        last_reply_time[sender_id] = datetime.now()
-        blocked_chats.add(chat_id)
-
-        print(f"✅ Відповів і повернув OFFLINE (чат {chat_id})")
-        print(f"📝 Текст відповіді: {reply_text}")
-
-    except Exception as e:
-        print(f"❌ Помилка: {e}")
+            print(f"✅ Відповів і повернув OFFLINE (чат {chat_id})")
+        
+            
+        except asyncio.CancelledError:
+            print(f"❌ Задача для чату {chat_id} скасована")
+        except Exception as e:
+            print(f"❌ Помилка при відправці в чат {chat_id}: {e}")
+        finally:
+            # Видаляємо задачу зі словника
+            if chat_id in scheduled_messages:
+                del scheduled_messages[chat_id]
+    
+    # Створюємо і зберігаємо задачу
+    task = asyncio.create_task(send_delayed_message())
+    scheduled_messages[chat_id] = task
 
 
 # ===== MAIN
