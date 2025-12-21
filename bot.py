@@ -152,7 +152,7 @@ async def auto_reply_handler(event):
     async def send_delayed_message():
         try:
             # Перевіряємо кожні 5 секунд, чи не став я онлайн
-            for i in range(12):  # 12 * 5 секунд = 60 секунд
+            for i in range(24):  # 24 * 5 секунд = 120 секунд
                 await asyncio.sleep(5)
                 if is_online:
                     print(f"🚫 Скасовано відправку для чату {chat_id} (я став ONLINE)")
