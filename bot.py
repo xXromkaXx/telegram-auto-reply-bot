@@ -17,6 +17,7 @@ blocked_chats = set()   # чати, де бот вже відповів
 is_online = False
 me = None
 scheduled_messages = {}  # заплановані повідомлення: {chat_id: task}
+offline_since = None  # час, коли ти пішов в офлайн
 
 GREETINGS = re.compile(r'\b(привіт|вітаю|hello|hi|hey|ку|доброго дня|день добрий|добрий вечір)\b', re.IGNORECASE)
 DAIVINCHIK = re.compile(r'\b(дайвінчик|Дайвінчика)\b', re.IGNORECASE)
@@ -35,7 +36,7 @@ async def has_my_messages(chat_id):
     """
     try:
         # Шукаємо останні 100 повідомлень в чаті від мене
-        async for message in client.iter_messages(chat_id, limit=100, from_user='me'):
+        async for message in client.iter_messages(chat_id, limit=50, from_user='me'):
             if message.out:  # Якщо це моє повідомлення
                 return True
     except Exception as e:
@@ -54,12 +55,10 @@ async def has_my_messages(chat_id):
     return False
 
 
-# ===== ONLINE / OFFLINE статус
 @client.on(events.UserUpdate)
 async def user_status_handler(event):
-    global is_online, me
+    global is_online, me, offline_since
 
-    # Якщо me ще не ініціалізовано, пропускаємо
     if me is None:
         return
 
@@ -68,20 +67,20 @@ async def user_status_handler(event):
 
     if isinstance(event.status, UserStatusOnline):
         is_online = True
+        offline_since = None
         print("🟢 ONLINE — бот мовчить і скасовує заплановані повідомлення")
-        
-        # Скасовуємо всі заплановані повідомлення
+
         for chat_id, task in list(scheduled_messages.items()):
             if not task.done():
                 task.cancel()
                 print(f"❌ Скасовано заплановане повідомлення для чату {chat_id}")
-        
-        # Очищаємо словник
+
         scheduled_messages.clear()
 
     elif isinstance(event.status, UserStatusOffline):
         is_online = False
-        print("🔴 OFFLINE — бот активний")
+        offline_since = datetime.now()
+        print("🔴 OFFLINE — старт відліку 2 хвилин")
 
 
 # ===== Якщо ТИ сам написав — розблоковуємо чат
@@ -105,8 +104,22 @@ async def my_message_handler(event):
 async def auto_reply_handler(event):
     if not event.is_private or not event.text or event.out:
         return
+    sender = await event.get_sender()
 
+# ❌ якщо це бот — ігноруємо
+    if sender.bot:
+        print("🤖 Повідомлення від бота — ігнор")
+        return
+    # Якщо онлайн — мовчимо
     if is_online:
+        return
+
+# Якщо офлайн менше 2 хвилин — мовчимо
+    if offline_since is None:
+        return
+
+    if datetime.now() - offline_since < timedelta(minutes=2):
+        print("⏳ OFFLINE менше 2 хв — ще не відповідаю")
         return
 
     chat_id = event.chat_id
@@ -152,7 +165,7 @@ async def auto_reply_handler(event):
     async def send_delayed_message():
         try:
             # Перевіряємо кожні 5 секунд, чи не став я онлайн
-            for i in range(24):  # 24 * 5 секунд = 120 секунд
+            for i in range(12):  # 12 * 5 секунд = 60 секунд
                 await asyncio.sleep(5)
                 if is_online:
                     print(f"🚫 Скасовано відправку для чату {chat_id} (я став ONLINE)")
