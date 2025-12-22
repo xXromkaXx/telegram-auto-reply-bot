@@ -11,7 +11,7 @@ API_ID = 39858841
 API_HASH = 'de06619decf663b5ef5cba304cb04d5e'
 SESSION_STRING = os.getenv("SESSION_STRING")
 
-OPENAI_API_KEY = "OPENAI_API_KEY"
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 client_ai = OpenAI(api_key=OPENAI_API_KEY)
 
 gpt_reply_count = {}  # chat_id: count
