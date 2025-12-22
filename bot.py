@@ -6,10 +6,28 @@ from telethon.sessions import StringSession
 import asyncio
 import os
 import re
-
+from openai import OpenAI
 API_ID = 39858841
 API_HASH = 'de06619decf663b5ef5cba304cb04d5e'
 SESSION_STRING = os.getenv("SESSION_STRING")
+
+OPENAI_API_KEY = "OPENAI_API_KEY"
+client_ai = OpenAI(api_key=OPENAI_API_KEY)
+
+gpt_reply_count = {}  # chat_id: count
+
+ABOUT_ME = """
+Мене звати Роман, мені 18 років.
+Я нормальний простий хлопець не курю .
+Люблю спорт, програмування, гуляти, живе спілкування.
+Пишу просто, тепло, без пафосу.
+Спілкуюсь українською, іноді з емодзі.
+"""
+MEET_QUESTION = re.compile(
+    r'(познайом|знайом|не проти|можна|давай знайом)',
+    re.IGNORECASE
+)
+
 
 # ===== СТАНИ =====
 last_reply_time = {}
@@ -27,6 +45,43 @@ client = TelegramClient(
     API_ID,
     API_HASH
 )
+async def generate_gpt_reply(user_text, force_meet=False):
+    if force_meet:
+        instruction = """
+Перше повідомлення.
+Людина ще прямо не запропонувала знайомитись.
+Ти сам м'яко і приємно ініціюєш знайомство.
+"""
+    else:
+        instruction = """
+Відповідай природно на повідомлення людини.
+"""
+
+    prompt = f"""
+Ти — це я, реальний хлопець 18 років.
+Спілкуєшся в дайвінчику.
+Пиши по-людськи, тепло, без офіційності.
+
+Факти про мене:
+{ABOUT_ME}
+
+{instruction}
+
+Повідомлення співрозмовника:
+"{user_text}"
+
+Згенеруй ОДНЕ коротке повідомлення (1–2 речення).
+"""
+
+    response = client_ai.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=120,
+        temperature=0.9
+    )
+
+    return response.choices[0].message.content.strip()
+
 
 # ===== Перевірка: чи є в чаті мої повідомлення (вся історія)
 async def has_my_messages(chat_id):
@@ -88,6 +143,9 @@ async def user_status_handler(event):
 async def my_message_handler(event):
     if event.is_private:
         chat_id = event.chat_id
+        if chat_id in gpt_reply_count:
+            del gpt_reply_count[chat_id]
+            print(f"🧠 GPT лічильник скинуто для чату {chat_id}")
         if chat_id in blocked_chats:
             blocked_chats.remove(chat_id)
             print(f"🔓 Чат {chat_id} розблоковано (ти написав)")
@@ -102,6 +160,8 @@ async def my_message_handler(event):
 # ===== Автовідповіді
 @client.on(events.NewMessage(incoming=True))
 async def auto_reply_handler(event):
+    reply_text = None
+
     if not event.is_private or not event.text or event.out:
         return
     sender = await event.get_sender()
@@ -145,9 +205,24 @@ async def auto_reply_handler(event):
     
     # Якщо НОВИЙ чат (я ніколи не писав туди)
     if not i_wrote_before:
-        # Якщо є слово "дайвінчик" - спеціальна відповідь
         if DAIVINCHIK.search(text):
-            reply_text = "Привіт! Бачу ти з дайвінчика 😊 ромка зараз відпочиває або дуже зайнятий, але скоро буде з тобою!"
+
+            count = gpt_reply_count.get(chat_id, 0)
+
+            if count >= 2:
+                blocked_chats.add(chat_id)
+                return
+
+    # 👇 ПЕРШЕ повідомлення
+            if count == 0:
+        # якщо НЕМА питання про знайомство
+                force_meet = not MEET_QUESTION.search(text)
+            else:
+                force_meet = False
+
+            reply_text = await generate_gpt_reply(text, force_meet=force_meet)
+            gpt_reply_count[chat_id] = count + 1
+
         else:
             # Стандартна відповідь для нового чату
             reply_text = "Привіт! Я зараз зайнятий, надіюсь не срочне повідомлення. Відповім як зможу!"
@@ -210,6 +285,8 @@ async def auto_reply_handler(event):
                 del scheduled_messages[chat_id]
     
     # Створюємо і зберігаємо задачу
+    if not reply_text:
+        return
     task = asyncio.create_task(send_delayed_message())
     scheduled_messages[chat_id] = task
 
