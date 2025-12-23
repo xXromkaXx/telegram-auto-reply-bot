@@ -20,12 +20,12 @@ chat_histories = {}
 message_accumulator_tasks = {}
 # Словник для зберігання буфера повідомлень для акумуляції
 message_buffers = {}
-# Словник для часу останньої активності в чаті
-last_activity_time = {}
+# Таймери для акумуляції повідомлень
+accumulation_timers = {}
 
 ABOUT_ME = """
 Мене звати Роман, мені 18 років.
-Я нормальний простий хлопець не курю.
+Я  просто рома в якого мода не курити
 Люблю спорт, програмування, гуляти, живе спілкування.
 Пишу просто, тепло, без пафосу.
 Спілкуюсь українською, іноді з емодзі.
@@ -37,7 +37,6 @@ MEET_QUESTION = re.compile(
 
 # ===== СТАНИ =====
 last_reply_time = {}
-blocked_chats = set()   # чати, де бот вже відповів
 is_online = False
 me = None
 scheduled_messages = {}  # заплановані повідомлення: {chat_id: task}
@@ -55,29 +54,37 @@ client = TelegramClient(
 async def generate_gpt_reply(chat_history, force_meet=False):
     """
     Генерує відповідь на основі всієї історії діалогу в чаті.
-    chat_history: список словників [{"role": "user", "content": "текст"}, ...]
     """
-    instruction = "Відповідай природно на повідомлення людини. Пам'ятай, що це діалог у чаті, де можуть бути кілька повідомлень підряд. Розумій контекст попередніх повідомлень."
+    instruction = """Ти — це я, реальний хлопець 18 років. Спілкуєшся в Телеграмі.
+Відповідай природно, як у реальному діалозі. Зберігай контекст попередніх повідомлень.
+Будь дружелюбним, цікавим співрозмовником."""
+    
     if force_meet:
-        instruction = "Перше повідомлення. Ти м'яко і приємно ініціюєш знайомство."
+        instruction = "Перше повідомлення. Ти м'яко і приємно ініціюєш знайомство. Будь відкритим і дружелюбним."
 
-    # Формуємо системне повідомлення з інструкцією та фактами
+    # Формуємо системне повідомлення
     system_message = {
         "role": "system",
-        "content": f"""Ти — це я, реальний хлопець 18 років. Спілкуєшся в дайвінчику.
-Пиши по-людськи, тепло, без офіційності. Факти про мене: {ABOUT_ME}
-Інструкція: {instruction}
-Відповідай розгорнуто, але природно, як у реальному спілкуванні."""
+        "content": f"""{instruction}
+
+Факти про мене:
+{ABOUT_ME}
+
+Важливо:
+1. Відповідай на всі питання та репліки з останніх повідомлень
+2. Буди активним співрозмовником
+3. Пиши українською, можна з емодзі 😊
+4. Не будь занадто формальним"""
     }
 
     # Об'єднуємо системне повідомлення з історією діалогу
-    messages_for_gpt = [system_message] + chat_history[-20:]  # Беремо останні 20 повідомлень для контексту
+    messages_for_gpt = [system_message] + chat_history[-15:]  # Беремо останні 15 повідомлень
 
     try:
         response = client_ai.chat.completions.create(
-            model="gpt-4o-mini",  # або інша доступна модель
+            model="gpt-4o-mini",
             messages=messages_for_gpt,
-            max_tokens=300,
+            max_tokens=350,
             temperature=0.85,
             presence_penalty=0.1,
             frequency_penalty=0.1
@@ -85,24 +92,20 @@ async def generate_gpt_reply(chat_history, force_meet=False):
         return response.choices[0].message.content.strip()
     except Exception as e:
         print(f"❌ Помилка GPT: {e}")
-        return "Зараз зайнятий, відпишу пізніше ✌️"
+        return "Зараз трохи зайнятий, але продовжуй писати 😊"
 
 async def process_accumulated_messages(chat_id):
     """
     Обробляє накопичені повідомлення для чату та відправляє одну відповідь
     """
-    # Даємо трохи часу на завершення акумуляції
-    await asyncio.sleep(0.5)
-    
-    # Отримуємо всі накопичені повідомлення
-    if chat_id not in message_buffers:
-        return
-    
-    messages = message_buffers[chat_id]
-    if not messages:
+    # Перевіряємо, чи є щось в буфері
+    if chat_id not in message_buffers or not message_buffers[chat_id]:
         message_buffers.pop(chat_id, None)
-        message_accumulator_tasks.pop(chat_id, None)
+        accumulation_timers.pop(chat_id, None)
         return
+    
+    messages = message_buffers[chat_id].copy()
+    print(f"🎯 Обробляю {len(messages)} накопичених повідомлень для чату {chat_id}")
     
     # Додаємо повідомлення до історії чату
     if chat_id not in chat_histories:
@@ -112,19 +115,16 @@ async def process_accumulated_messages(chat_id):
     for msg in messages:
         chat_histories[chat_id].append({"role": "user", "content": msg})
     
-    print(f"📝 Обробляю {len(messages)} накопичених повідомлень для чату {chat_id}")
-    
-    # Перевіряємо, чи є у історії повідомлення з ключовим словом "дайвінчик"
+    # Перевіряємо, чи є у повідомленнях ключове слово "дайвінчик"
     force_meet = False
     all_messages_text = " ".join([msg.lower() for msg in messages])
     if DAIVINCHIK.search(all_messages_text):
         force_meet = True
-        print(f"🎯 Виявлено 'дайвінчик' в накопичених повідомленнях, активую режим знайомства")
-    
-    # Генеруємо відповідь на основі всієї історії
-    reply_text = await generate_gpt_reply(chat_histories[chat_id], force_meet)
     
     try:
+        # Генеруємо відповідь
+        reply_text = await generate_gpt_reply(chat_histories[chat_id], force_meet)
+        
         # Відправляємо відповідь
         await client.send_message(chat_id, reply_text)
         print(f"✅ Відправили відповідь GPT у чат {chat_id}")
@@ -132,75 +132,73 @@ async def process_accumulated_messages(chat_id):
         # Додаємо відповідь до історії
         chat_histories[chat_id].append({"role": "assistant", "content": reply_text})
         
-        # Оновлюємо статус та очищуємо завдання
+        # Оновлюємо статус
         await client(UpdateStatusRequest(offline=True))
-        blocked_chats.add(chat_id)
         
-        # Не очищуємо історію, щоб зберігати контекст для наступного спілкування
-        # Зберігаємо лише останні 30 повідомлень для економії пам'яті
-        if len(chat_histories[chat_id]) > 30:
-            chat_histories[chat_id] = chat_histories[chat_id][-30:]
+        # Не блокуємо чат! Дозволяємо продовжити діалог
+        # Просто оновлюємо час останньої відповіді
+        last_reply_time[chat_id] = datetime.now()
+        
+        # Зберігаємо лише останні 20 повідомлень
+        if len(chat_histories[chat_id]) > 20:
+            chat_histories[chat_id] = chat_histories[chat_id][-20:]
             
     except Exception as e:
         print(f"❌ Помилка при відправці відповіді: {e}")
     finally:
-        # Очищуємо буфер та завдання
+        # Очищуємо буфер для цього чату
         message_buffers.pop(chat_id, None)
-        message_accumulator_tasks.pop(chat_id, None)
+        accumulation_timers.pop(chat_id, None)
 
-async def schedule_accumulated_reply(chat_id, message_text):
+def start_accumulation_timer(chat_id):
     """
-    Планує відправку відповіді на накопичені повідомлення
+    Запускає таймер для акумуляції повідомлень
     """
-    # Додаємо повідомлення до буфера
-    if chat_id not in message_buffers:
-        message_buffers[chat_id] = []
-    message_buffers[chat_id].append(message_text)
+    # Скасовуємо попередній таймер, якщо він є
+    if chat_id in accumulation_timers:
+        accumulation_timers[chat_id].cancel()
     
-    # Оновлюємо час останньої активності
-    last_activity_time[chat_id] = datetime.now()
-    
-    # Якщо вже є активне завдання для цього чату, скасовуємо його
-    old_task = message_accumulator_tasks.get(chat_id)
-    if old_task and not old_task.done():
-        old_task.cancel()
-    
-    # Створюємо нове завдання, яке запустить обробку через 10 секунд
-    new_task = asyncio.create_task(asyncio.sleep(10))
-    message_accumulator_tasks[chat_id] = new_task
-    
+    # Створюємо новий таймер
+    timer = asyncio.create_task(accumulation_timer_task(chat_id))
+    accumulation_timers[chat_id] = timer
+
+async def accumulation_timer_task(chat_id):
+    """
+    Завдання таймера: чекає 8 секунд, потім обробляє повідомлення
+    """
     try:
-        await new_task
-        # Після 10 секунд очікування - обробляємо повідомлення
+        await asyncio.sleep(8)  # Чекаємо 8 секунд
         await process_accumulated_messages(chat_id)
     except asyncio.CancelledError:
-        # Завдання скасовано (користувач продовжив писати)
-        pass
+        print(f"⏱️ Таймер для чату {chat_id} скасовано (нове повідомлення)")
+    except Exception as e:
+        print(f"❌ Помилка в таймері для чату {chat_id}: {e}")
 
-# ===== Перевірка: чи є в чаті мої повідомлення (вся історія)
+async def add_message_to_accumulation(chat_id, message_text):
+    """
+    Додає повідомлення до буфера акумуляції
+    """
+    if chat_id not in message_buffers:
+        message_buffers[chat_id] = []
+    
+    message_buffers[chat_id].append(message_text)
+    print(f"📥 Додано повідомлення до буфера чату {chat_id} (всього: {len(message_buffers[chat_id])})")
+    
+    # Запускаємо/перезапускаємо таймер
+    start_accumulation_timer(chat_id)
+
+# ===== Перевірка: чи є в чаті мої повідомлення
 async def has_my_messages(chat_id):
     """
-    Перевіряє, чи є в цьому чаті ХОЧА Б ОДНЕ моє повідомлення (навіть старше)
-    Повертає True, якщо я колись писав у цей чат
+    Перевіряє, чи є в цьому чаті ХОЧА Б ОДНЕ моє повідомлення
     """
     try:
-        # Шукаємо останні 100 повідомлень в чаті від мене
-        async for message in client.iter_messages(chat_id, limit=50, from_user='me'):
-            if message.out:  # Якщо це моє повідомлення
-                return True
+        messages = await client.get_messages(chat_id, limit=5, from_user='me')
+        if messages:
+            return True
     except Exception as e:
         print(f"⚠️ Помилка перевірки чату {chat_id}: {e}")
     
-    # Також перевіримо через get_messages для надійності
-    try:
-        messages = await client.get_messages(chat_id, limit=10, from_user='me')
-        if messages:
-            print(f"✅ В чаті {chat_id} знайдено {len(messages)} моїх повідомлень")
-            return True
-    except Exception as e:
-        print(f"⚠️ Помилка get_messages для чату {chat_id}: {e}")
-    
-    print(f"❌ В чаті {chat_id} не знайдено моїх повідомлень")
     return False
 
 @client.on(events.UserUpdate)
@@ -216,49 +214,55 @@ async def user_status_handler(event):
     if isinstance(event.status, UserStatusOnline):
         is_online = True
         offline_since = None
-        print("🟢 ONLINE — бот мовчить і скасовує заплановані повідомлення")
+        print("🟢 ONLINE — бот мовчить")
 
+        # Скасовуємо всі заплановані повідомлення
         for chat_id, task in list(scheduled_messages.items()):
             if not task.done():
                 task.cancel()
                 print(f"❌ Скасовано заплановане повідомлення для чату {chat_id}")
-
         scheduled_messages.clear()
+
+        # Скасовуємо всі таймери акумуляції
+        for chat_id, timer in list(accumulation_timers.items()):
+            if not timer.done():
+                timer.cancel()
+                print(f"⏱️ Скасовано таймер акумуляції для чату {chat_id}")
 
     elif isinstance(event.status, UserStatusOffline):
         is_online = False
         offline_since = datetime.now()
-        print("🔴 OFFLINE — старт відліку 2 хвилин")
+        print("🔴 OFFLINE — бот активний через 2 хвилини")
 
-# ===== Якщо ТИ сам написав — розблоковуємо чат та додаємо повідомлення до історії
+# ===== Якщо ТИ сам написав
 @client.on(events.NewMessage(outgoing=True))
 async def my_message_handler(event):
-    if event.is_private:
+    if event.is_private and event.text:
         chat_id = event.chat_id
         
-        # Розблоковуємо чат, якщо він був заблокований
-        if chat_id in blocked_chats:
-            blocked_chats.remove(chat_id)
-            print(f"🔓 Чат {chat_id} розблоковано (ти написав)")
+        print(f"💬 Ви написали в чат {chat_id}")
         
-        # Скасовуємо заплановане повідомлення для цього чату (якщо є)
+        # Скасовуємо заплановане повідомлення для цього чату
         if chat_id in scheduled_messages:
             task = scheduled_messages[chat_id]
             if not task.done():
                 task.cancel()
-                print(f"❌ Скасовано заплановане повідомлення для чату {chat_id} (ти написав)")
+                print(f"❌ Скасовано заплановане повідомлення для чату {chat_id}")
             del scheduled_messages[chat_id]
         
-        # Скасовуємо завдання на акумуляцію повідомлень для цього чату
-        if chat_id in message_accumulator_tasks:
-            task = message_accumulator_tasks[chat_id]
-            if not task.done():
-                task.cancel()
-                print(f"❌ Скасовано завдання акумуляції для чату {chat_id} (ти написав)")
-            message_accumulator_tasks.pop(chat_id, None)
-            message_buffers.pop(chat_id, None)
+        # Скасовуємо таймер акумуляції для цього чату
+        if chat_id in accumulation_timers:
+            timer = accumulation_timers[chat_id]
+            if not timer.done():
+                timer.cancel()
+                print(f"⏱️ Скасовано таймер акумуляції для чату {chat_id}")
         
-        # Додаємо наше повідомлення до історії чату
+        # Очищуємо буфер повідомлень
+        if chat_id in message_buffers:
+            message_buffers.pop(chat_id)
+            print(f"🧹 Очищено буфер повідомлень для чату {chat_id}")
+        
+        # Додаємо наше повідомлення до історії
         if chat_id not in chat_histories:
             chat_histories[chat_id] = []
         
@@ -267,126 +271,100 @@ async def my_message_handler(event):
             "content": event.text
         })
         
-        # Зберігаємо лише останні 30 повідомлень
-        if len(chat_histories[chat_id]) > 30:
-            chat_histories[chat_id] = chat_histories[chat_id][-30:]
+        # Зберігаємо лише останні 20 повідомлень
+        if len(chat_histories[chat_id]) > 20:
+            chat_histories[chat_id] = chat_histories[chat_id][-20:]
 
-# ===== Автовідповіді
+# ===== Автовідповіді на вхідні повідомлення
 @client.on(events.NewMessage(incoming=True))
 async def auto_reply_handler(event):
+    # Перевірки
     if not event.is_private or not event.text or event.out:
         return
     
     sender = await event.get_sender()
-
-    # ❌ якщо це бот — ігноруємо
     if sender.bot:
-        print("🤖 Повідомлення від бота — ігнор")
         return
     
     # Якщо онлайн — мовчимо
     if is_online:
         return
-
+    
     # Якщо офлайн менше 2 хвилин — мовчимо
-    if offline_since is None:
-        return
-
-    if datetime.now() - offline_since < timedelta(minutes=2):
-        print("⏳ OFFLINE менше 2 хв — ще не відповідаю")
+    if offline_since is None or datetime.now() - offline_since < timedelta(minutes=2):
         return
 
     chat_id = event.chat_id
     sender_id = event.sender_id
     text = event.text
-    text_lower = text.lower()
     now = datetime.now()
 
-    # ❌ Бот уже відповідав у цьому чаті
-    if chat_id in blocked_chats:
-        return
-
-    # ⏱ Антиспам (1 хв)
-    if sender_id in last_reply_time:
-        if now - last_reply_time[sender_id] < timedelta(minutes=1):
+    # Антиспам (30 секунд між відповідями GPT)
+    if chat_id in last_reply_time:
+        time_since_last = now - last_reply_time[chat_id]
+        if time_since_last < timedelta(seconds=30):
+            print(f"⏳ Чат {chat_id}: занадто швидко після останньої відповіді ({time_since_last.seconds}с)")
             return
 
     # ===== ОСНОВНА ЛОГІКА =====
-    # Перевірка: чи я колись писав у цей чат (вся історія)
+    print(f"📨 Отримано повідомлення в чаті {chat_id}: {text[:50]}...")
+    
+    # Перевіряємо, чи це новий чат
     i_wrote_before = await has_my_messages(chat_id)
     
-    print(f"🔍 Чат {chat_id}: я писав раніше = {i_wrote_before}")
-    
-    # Якщо НОВИЙ чат (я ніколи не писав туди)
     if not i_wrote_before:
-        if DAIVINCHIK.search(text):
-            # Запускаємо акумуляцію повідомлень для нового чату з ключовим словом
-            await schedule_accumulated_reply(chat_id, text)
-            print(f"🧠 Отримано повідомлення з 'дайвінчик' у новому чаті {chat_id}. Запущено акумуляцію повідомлень.")
-            return
+        # НОВИЙ чат - перевіряємо на "дайвінчик"
+        if DAIVINCHIK.search(text.lower()):
+            print(f"🎯 Новий чат {chat_id} з 'дайвінчик' - запускаємо акумуляцію")
+            await add_message_to_accumulation(chat_id, text)
         else:
-            # Стандартна відповідь для нового чату без ключового слова
-            reply_text = "Привіт! Я зараз зайнятий, надіюсь не срочне повідомлення. Відповім як зможу!"
-            await schedule_delayed_reply(chat_id, event, reply_text)
-    
-    else:  # Чат вже існуючий (я колись в ньому писав)
-        # Для існуючого чату завжди акумулюємо повідомлення
-        await schedule_accumulated_reply(chat_id, text)
-        print(f"📨 Додано повідомлення до акумуляції для існуючого чату {chat_id}")
+            # Новий чат без ключового слова - стандартна відповідь
+            print(f"📝 Новий чат {chat_id} без ключового слова - стандартна відповідь")
+            await schedule_standard_reply(chat_id, event)
+    else:
+        # ІСНУЮЧИЙ чат - завжди акумулюємо
+        print(f"💾 Існуючий чат {chat_id} - додаємо до акумуляції")
+        await add_message_to_accumulation(chat_id, text)
 
-async def schedule_delayed_reply(chat_id, event, reply_text):
+async def schedule_standard_reply(chat_id, event):
     """
     Запланована відправка стандартної відповіді через 1 хвилину
+    (для нових чатів без ключового слова)
     """
-    print(f"⏰ Заплановано відповідь для {chat_id} через 1 хв...")
+    print(f"⏰ Заплановано стандартну відповідь для {chat_id} через 1 хв")
     
     async def send_delayed_message():
         try:
-            # Перевіряємо кожні 5 секунд, чи не став я онлайн
-            for i in range(12):  # 12 * 5 секунд = 60 секунд
+            # Чекаємо 60 секунд, перевіряючи кожні 5 секунд
+            for i in range(12):
                 await asyncio.sleep(5)
                 if is_online:
-                    print(f"🚫 Скасовано відправку для чату {chat_id} (я став ONLINE)")
-                    if chat_id in scheduled_messages:
-                        del scheduled_messages[chat_id]
+                    print(f"🚫 Скасовано для чату {chat_id} (став ONLINE)")
                     return
             
-            # Перевіряємо ще раз перед відправкою
             if is_online:
-                print(f"🚫 Не відправляю повідомлення в чат {chat_id} (я ONLINE)")
-                return
-                
-            # Перевіряємо, чи чат все ще не заблокований
-            if chat_id in blocked_chats:
-                print(f"🚫 Чат {chat_id} вже заблокований")
                 return
             
-            print(f"📤 Надсилаю заплановане повідомлення для {chat_id}")
+            print(f"📤 Надсилаю стандартну відповідь для {chat_id}")
             
             await client.send_message(
                 chat_id,
-                reply_text,
+                "Привіт! Я зараз зайнятий, надіюсь не срочне повідомлення. Відповім як зможу!",
                 reply_to=event.message.id
             )
-
-            # 🔥 Повертаємо OFFLINE (Telegram сам робить ONLINE на мить)
+            
             await client(UpdateStatusRequest(offline=True))
-
-            last_reply_time[event.sender_id] = datetime.now()
-            blocked_chats.add(chat_id)
-
-            print(f"✅ Відповів і повернув OFFLINE (чат {chat_id})")
+            last_reply_time[chat_id] = datetime.now()
+            
+            print(f"✅ Відправив стандартну відповідь у чат {chat_id}")
             
         except asyncio.CancelledError:
             print(f"❌ Задача для чату {chat_id} скасована")
         except Exception as e:
             print(f"❌ Помилка при відправці в чат {chat_id}: {e}")
         finally:
-            # Видаляємо задачу зі словника
-            if chat_id in scheduled_messages:
-                del scheduled_messages[chat_id]
+            scheduled_messages.pop(chat_id, None)
     
-    # Створюємо і зберігаємо задачу
     task = asyncio.create_task(send_delayed_message())
     scheduled_messages[chat_id] = task
 
@@ -398,8 +376,8 @@ async def main():
     me = await client.get_me()
 
     print(f"✅ Увійшов як: {me.first_name}")
-    print("🤖 AFK-бот активний з покращеним режимом спілкування")
-  
+    print("🤖 AFK-бот активний ")
+   
 
     await client.run_until_disconnected()
 
