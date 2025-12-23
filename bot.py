@@ -7,18 +7,25 @@ import asyncio
 import os
 import re
 from openai import OpenAI
+
 API_ID = 39858841
 API_HASH = 'de06619decf663b5ef5cba304cb04d5e'
 SESSION_STRING = os.getenv("SESSION_STRING")
-
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 client_ai = OpenAI(api_key=OPENAI_API_KEY)
 
-gpt_reply_count = {}  # chat_id: count
+# Словник для зберігання історії діалогів: chat_id -> список повідомлень
+chat_histories = {}
+# Словник для зберігання завдань на "акумуляцію" повідомлень: chat_id -> asyncio.Task
+message_accumulator_tasks = {}
+# Словник для зберігання буфера повідомлень для акумуляції
+message_buffers = {}
+# Словник для часу останньої активності в чаті
+last_activity_time = {}
 
 ABOUT_ME = """
 Мене звати Роман, мені 18 років.
-Я нормальний простий хлопець не курю .
+Я нормальний простий хлопець не курю.
 Люблю спорт, програмування, гуляти, живе спілкування.
 Пишу просто, тепло, без пафосу.
 Спілкуюсь українською, іноді з емодзі.
@@ -27,7 +34,6 @@ MEET_QUESTION = re.compile(
     r'(познайом|знайом|не проти|можна|давай знайом)',
     re.IGNORECASE
 )
-
 
 # ===== СТАНИ =====
 last_reply_time = {}
@@ -45,43 +51,131 @@ client = TelegramClient(
     API_ID,
     API_HASH
 )
-async def generate_gpt_reply(user_text, force_meet=False):
+
+async def generate_gpt_reply(chat_history, force_meet=False):
+    """
+    Генерує відповідь на основі всієї історії діалогу в чаті.
+    chat_history: список словників [{"role": "user", "content": "текст"}, ...]
+    """
+    instruction = "Відповідай природно на повідомлення людини. Пам'ятай, що це діалог у чаті, де можуть бути кілька повідомлень підряд. Розумій контекст попередніх повідомлень."
     if force_meet:
-        instruction = """
-Перше повідомлення.
-Людина ще прямо не запропонувала знайомитись.
-Ти сам м'яко і приємно ініціюєш знайомство.
-"""
-    else:
-        instruction = """
-Відповідай природно на повідомлення людини.
-"""
+        instruction = "Перше повідомлення. Ти м'яко і приємно ініціюєш знайомство."
 
-    prompt = f"""
-Ти — це я, реальний хлопець 18 років.
-Спілкуєшся в дайвінчику.
-Пиши по-людськи, тепло, без офіційності.
+    # Формуємо системне повідомлення з інструкцією та фактами
+    system_message = {
+        "role": "system",
+        "content": f"""Ти — це я, реальний хлопець 18 років. Спілкуєшся в дайвінчику.
+Пиши по-людськи, тепло, без офіційності. Факти про мене: {ABOUT_ME}
+Інструкція: {instruction}
+Відповідай розгорнуто, але природно, як у реальному спілкуванні."""
+    }
 
-Факти про мене:
-{ABOUT_ME}
+    # Об'єднуємо системне повідомлення з історією діалогу
+    messages_for_gpt = [system_message] + chat_history[-20:]  # Беремо останні 20 повідомлень для контексту
 
-{instruction}
+    try:
+        response = client_ai.chat.completions.create(
+            model="gpt-4o-mini",  # або інша доступна модель
+            messages=messages_for_gpt,
+            max_tokens=300,
+            temperature=0.85,
+            presence_penalty=0.1,
+            frequency_penalty=0.1
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"❌ Помилка GPT: {e}")
+        return "Зараз зайнятий, відпишу пізніше ✌️"
 
-Повідомлення співрозмовника:
-"{user_text}"
+async def process_accumulated_messages(chat_id):
+    """
+    Обробляє накопичені повідомлення для чату та відправляє одну відповідь
+    """
+    # Даємо трохи часу на завершення акумуляції
+    await asyncio.sleep(0.5)
+    
+    # Отримуємо всі накопичені повідомлення
+    if chat_id not in message_buffers:
+        return
+    
+    messages = message_buffers[chat_id]
+    if not messages:
+        message_buffers.pop(chat_id, None)
+        message_accumulator_tasks.pop(chat_id, None)
+        return
+    
+    # Додаємо повідомлення до історії чату
+    if chat_id not in chat_histories:
+        chat_histories[chat_id] = []
+    
+    # Додаємо всі накопичені повідомлення до історії
+    for msg in messages:
+        chat_histories[chat_id].append({"role": "user", "content": msg})
+    
+    print(f"📝 Обробляю {len(messages)} накопичених повідомлень для чату {chat_id}")
+    
+    # Перевіряємо, чи є у історії повідомлення з ключовим словом "дайвінчик"
+    force_meet = False
+    all_messages_text = " ".join([msg.lower() for msg in messages])
+    if DAIVINCHIK.search(all_messages_text):
+        force_meet = True
+        print(f"🎯 Виявлено 'дайвінчик' в накопичених повідомленнях, активую режим знайомства")
+    
+    # Генеруємо відповідь на основі всієї історії
+    reply_text = await generate_gpt_reply(chat_histories[chat_id], force_meet)
+    
+    try:
+        # Відправляємо відповідь
+        await client.send_message(chat_id, reply_text)
+        print(f"✅ Відправили відповідь GPT у чат {chat_id}")
+        
+        # Додаємо відповідь до історії
+        chat_histories[chat_id].append({"role": "assistant", "content": reply_text})
+        
+        # Оновлюємо статус та очищуємо завдання
+        await client(UpdateStatusRequest(offline=True))
+        blocked_chats.add(chat_id)
+        
+        # Не очищуємо історію, щоб зберігати контекст для наступного спілкування
+        # Зберігаємо лише останні 30 повідомлень для економії пам'яті
+        if len(chat_histories[chat_id]) > 30:
+            chat_histories[chat_id] = chat_histories[chat_id][-30:]
+            
+    except Exception as e:
+        print(f"❌ Помилка при відправці відповіді: {e}")
+    finally:
+        # Очищуємо буфер та завдання
+        message_buffers.pop(chat_id, None)
+        message_accumulator_tasks.pop(chat_id, None)
 
-Згенеруй ОДНЕ коротке повідомлення (1–2 речення).
-"""
-
-    response = client_ai.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=120,
-        temperature=0.9
-    )
-
-    return response.choices[0].message.content.strip()
-
+async def schedule_accumulated_reply(chat_id, message_text):
+    """
+    Планує відправку відповіді на накопичені повідомлення
+    """
+    # Додаємо повідомлення до буфера
+    if chat_id not in message_buffers:
+        message_buffers[chat_id] = []
+    message_buffers[chat_id].append(message_text)
+    
+    # Оновлюємо час останньої активності
+    last_activity_time[chat_id] = datetime.now()
+    
+    # Якщо вже є активне завдання для цього чату, скасовуємо його
+    old_task = message_accumulator_tasks.get(chat_id)
+    if old_task and not old_task.done():
+        old_task.cancel()
+    
+    # Створюємо нове завдання, яке запустить обробку через 10 секунд
+    new_task = asyncio.create_task(asyncio.sleep(10))
+    message_accumulator_tasks[chat_id] = new_task
+    
+    try:
+        await new_task
+        # Після 10 секунд очікування - обробляємо повідомлення
+        await process_accumulated_messages(chat_id)
+    except asyncio.CancelledError:
+        # Завдання скасовано (користувач продовжив писати)
+        pass
 
 # ===== Перевірка: чи є в чаті мої повідомлення (вся історія)
 async def has_my_messages(chat_id):
@@ -108,7 +202,6 @@ async def has_my_messages(chat_id):
     
     print(f"❌ В чаті {chat_id} не знайдено моїх повідомлень")
     return False
-
 
 @client.on(events.UserUpdate)
 async def user_status_handler(event):
@@ -137,44 +230,65 @@ async def user_status_handler(event):
         offline_since = datetime.now()
         print("🔴 OFFLINE — старт відліку 2 хвилин")
 
-
-# ===== Якщо ТИ сам написав — розблоковуємо чат
+# ===== Якщо ТИ сам написав — розблоковуємо чат та додаємо повідомлення до історії
 @client.on(events.NewMessage(outgoing=True))
 async def my_message_handler(event):
     if event.is_private:
         chat_id = event.chat_id
-        if chat_id in gpt_reply_count:
-            del gpt_reply_count[chat_id]
-            print(f"🧠 GPT лічильник скинуто для чату {chat_id}")
+        
+        # Розблоковуємо чат, якщо він був заблокований
         if chat_id in blocked_chats:
             blocked_chats.remove(chat_id)
             print(f"🔓 Чат {chat_id} розблоковано (ти написав)")
-# Скасовуємо заплановане повідомлення для цього чату (якщо є)
+        
+        # Скасовуємо заплановане повідомлення для цього чату (якщо є)
         if chat_id in scheduled_messages:
             task = scheduled_messages[chat_id]
             if not task.done():
                 task.cancel()
                 print(f"❌ Скасовано заплановане повідомлення для чату {chat_id} (ти написав)")
             del scheduled_messages[chat_id]
+        
+        # Скасовуємо завдання на акумуляцію повідомлень для цього чату
+        if chat_id in message_accumulator_tasks:
+            task = message_accumulator_tasks[chat_id]
+            if not task.done():
+                task.cancel()
+                print(f"❌ Скасовано завдання акумуляції для чату {chat_id} (ти написав)")
+            message_accumulator_tasks.pop(chat_id, None)
+            message_buffers.pop(chat_id, None)
+        
+        # Додаємо наше повідомлення до історії чату
+        if chat_id not in chat_histories:
+            chat_histories[chat_id] = []
+        
+        chat_histories[chat_id].append({
+            "role": "assistant", 
+            "content": event.text
+        })
+        
+        # Зберігаємо лише останні 30 повідомлень
+        if len(chat_histories[chat_id]) > 30:
+            chat_histories[chat_id] = chat_histories[chat_id][-30:]
 
 # ===== Автовідповіді
 @client.on(events.NewMessage(incoming=True))
 async def auto_reply_handler(event):
-    reply_text = None
-
     if not event.is_private or not event.text or event.out:
         return
+    
     sender = await event.get_sender()
 
-# ❌ якщо це бот — ігноруємо
+    # ❌ якщо це бот — ігноруємо
     if sender.bot:
         print("🤖 Повідомлення від бота — ігнор")
         return
+    
     # Якщо онлайн — мовчимо
     if is_online:
         return
 
-# Якщо офлайн менше 2 хвилин — мовчимо
+    # Якщо офлайн менше 2 хвилин — мовчимо
     if offline_since is None:
         return
 
@@ -206,37 +320,26 @@ async def auto_reply_handler(event):
     # Якщо НОВИЙ чат (я ніколи не писав туди)
     if not i_wrote_before:
         if DAIVINCHIK.search(text):
-
-            count = gpt_reply_count.get(chat_id, 0)
-
-            if count >= 2:
-                blocked_chats.add(chat_id)
-                return
-
-    # 👇 ПЕРШЕ повідомлення
-            if count == 0:
-        # якщо НЕМА питання про знайомство
-                force_meet = not MEET_QUESTION.search(text)
-            else:
-                force_meet = False
-
-            reply_text = await generate_gpt_reply(text, force_meet=force_meet)
-            gpt_reply_count[chat_id] = count + 1
-
+            # Запускаємо акумуляцію повідомлень для нового чату з ключовим словом
+            await schedule_accumulated_reply(chat_id, text)
+            print(f"🧠 Отримано повідомлення з 'дайвінчик' у новому чаті {chat_id}. Запущено акумуляцію повідомлень.")
+            return
         else:
-            # Стандартна відповідь для нового чату
+            # Стандартна відповідь для нового чату без ключового слова
             reply_text = "Привіт! Я зараз зайнятий, надіюсь не срочне повідомлення. Відповім як зможу!"
+            await schedule_delayed_reply(chat_id, event, reply_text)
     
     else:  # Чат вже існуючий (я колись в ньому писав)
-        # Якщо повідомлення містить вітання
-        if GREETINGS.search(text):
-            reply_text = "Привіт! Зараз зайнятий, відпишу пізніше ✌️"
-        # Інакше - без вітання
-        else:
-            reply_text = "Зараз зайнятий, відпишу пізніше ✌️"
+        # Для існуючого чату завжди акумулюємо повідомлення
+        await schedule_accumulated_reply(chat_id, text)
+        print(f"📨 Додано повідомлення до акумуляції для існуючого чату {chat_id}")
 
-    print(f"⏰ Відповідаю {sender_id} через 1 хв...")
-    # Створюємо асинхронну задачу для відправки через 1 хвилину
+async def schedule_delayed_reply(chat_id, event, reply_text):
+    """
+    Запланована відправка стандартної відповіді через 1 хвилину
+    """
+    print(f"⏰ Заплановано відповідь для {chat_id} через 1 хв...")
+    
     async def send_delayed_message():
         try:
             # Перевіряємо кожні 5 секунд, чи не став я онлайн
@@ -258,10 +361,10 @@ async def auto_reply_handler(event):
                 print(f"🚫 Чат {chat_id} вже заблокований")
                 return
             
-            print(f"📤 Надсилаю заплановане повідомлення для {sender_id}")
+            print(f"📤 Надсилаю заплановане повідомлення для {chat_id}")
             
             await client.send_message(
-                sender_id,
+                chat_id,
                 reply_text,
                 reply_to=event.message.id
             )
@@ -269,11 +372,10 @@ async def auto_reply_handler(event):
             # 🔥 Повертаємо OFFLINE (Telegram сам робить ONLINE на мить)
             await client(UpdateStatusRequest(offline=True))
 
-            last_reply_time[sender_id] = datetime.now()
+            last_reply_time[event.sender_id] = datetime.now()
             blocked_chats.add(chat_id)
 
             print(f"✅ Відповів і повернув OFFLINE (чат {chat_id})")
-        
             
         except asyncio.CancelledError:
             print(f"❌ Задача для чату {chat_id} скасована")
@@ -285,11 +387,8 @@ async def auto_reply_handler(event):
                 del scheduled_messages[chat_id]
     
     # Створюємо і зберігаємо задачу
-    if not reply_text:
-        return
     task = asyncio.create_task(send_delayed_message())
     scheduled_messages[chat_id] = task
-
 
 # ===== MAIN
 async def main():
@@ -299,10 +398,10 @@ async def main():
     me = await client.get_me()
 
     print(f"✅ Увійшов як: {me.first_name}")
-    print("🤖 AFK-бот активний")
+    print("🤖 AFK-бот активний з покращеним режимом спілкування")
+  
 
     await client.run_until_disconnected()
-
 
 if __name__ == '__main__':
     try:
