@@ -57,6 +57,10 @@ client = TelegramClient(
     API_HASH
 )
 BLOCKED_CHATS = {5885735578}
+
+CONTROL_CHAT_ID = 1293715368
+bot_enabled = True
+
 async def generate_gpt_reply(chat_history, is_daivin_chat=False):
     """
     Генерує відповідь на основі всієї історії діалогу в чаті.
@@ -125,6 +129,8 @@ async def process_accumulated_messages(chat_id):
     """
     Обробляє накопичені повідомлення для чату та відправляє одну відповідь
     """
+    if not bot_enabled:
+        return
     if chat_id in BLOCKED_CHATS:
         return
     # Перевіряємо, чи є щось в буфері
@@ -267,9 +273,38 @@ async def user_status_handler(event):
         offline_since = datetime.now()
         print("🔴 OFFLINE — бот активний через 2 хвилини")
 
+@client.on(events.NewMessage(outgoing=True))
+async def bot_control_handler(event):
+    global bot_enabled
+
+    if event.chat_id != CONTROL_CHAT_ID:
+        return
+
+    if not event.text:
+        return
+
+    text = event.text.strip().lower()
+
+    if text == "/bot off":
+        bot_enabled = False
+        await event.reply("🔴 Бот вимкнено")
+        print("🔴 BOT DISABLED")
+        return
+
+    if text == "/bot on":
+        bot_enabled = True
+        await event.reply("🟢 Бот увімкнено")
+        print("🟢 BOT ENABLED")
+        return
+
+
 # ===== Якщо ТИ сам написав
 @client.on(events.NewMessage(outgoing=True))
 async def my_message_handler(event):
+    if event.chat_id == CONTROL_CHAT_ID and event.text:
+        if event.text.strip().lower().startswith("/bot"):
+            return
+    
     if event.is_private and event.text:
         chat_id = event.chat_id
         
@@ -309,6 +344,9 @@ async def my_message_handler(event):
 @client.on(events.NewMessage(incoming=True))
 async def auto_reply_handler(event):
     # Перевірки
+    if not bot_enabled:
+        return
+    
     if not event.is_private or not event.text or event.out:
         return
     chat_id = event.chat_id
@@ -328,7 +366,7 @@ async def auto_reply_handler(event):
     if offline_since is None or datetime.now() - offline_since < timedelta(minutes=3):
         return
 
-    chat_id = event.chat_id
+    
     text = event.text
     now = datetime.now()
     
@@ -412,7 +450,7 @@ async def cleanup_old_data():
     while True:
         await asyncio.sleep(3600)  # Кожну годину
         now = datetime.now()
-        
+     
         # Очищуємо старі чати з історії (старіші за 24 години)
         chats_to_remove = []
         for chat_id in list(chat_histories.keys()):
