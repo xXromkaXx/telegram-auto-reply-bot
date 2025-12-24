@@ -125,6 +125,8 @@ async def process_accumulated_messages(chat_id):
     """
     Обробляє накопичені повідомлення для чату та відправляє одну відповідь
     """
+    if chat_id in BLOCKED_CHATS:
+    return
     # Перевіряємо, чи є щось в буфері
     if chat_id not in message_buffers or not message_buffers[chat_id]:
         message_buffers.pop(chat_id, None)
@@ -309,7 +311,7 @@ async def auto_reply_handler(event):
     # Перевірки
     if not event.is_private or not event.text or event.out:
         return
-
+    chat_id = event.chat_id
     if chat_id in BLOCKED_CHATS:
         print(f"🚫 Чат {chat_id} в BLOCKED_CHATS - ігноруємо повідомлення")
         return
