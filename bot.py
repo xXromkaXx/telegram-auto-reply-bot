@@ -126,7 +126,7 @@ async def process_accumulated_messages(chat_id):
     Обробляє накопичені повідомлення для чату та відправляє одну відповідь
     """
     if chat_id in BLOCKED_CHATS:
-    return
+        return
     # Перевіряємо, чи є щось в буфері
     if chat_id not in message_buffers or not message_buffers[chat_id]:
         message_buffers.pop(chat_id, None)
