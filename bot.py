@@ -56,7 +56,7 @@ client = TelegramClient(
     API_ID,
     API_HASH
 )
-
+BLOCKED_CHATS = {5885735578}
 async def generate_gpt_reply(chat_history, is_daivin_chat=False):
     """
     Генерує відповідь на основі всієї історії діалогу в чаті.
@@ -309,6 +309,10 @@ async def auto_reply_handler(event):
     # Перевірки
     if not event.is_private or not event.text or event.out:
         return
+
+    if chat_id in BLOCKED_CHATS:
+        print(f"🚫 Чат {chat_id} в BLOCKED_CHATS - ігноруємо повідомлення")
+        return
     
     sender = await event.get_sender()
     if sender.bot:
@@ -318,8 +322,8 @@ async def auto_reply_handler(event):
     if is_online:
         return
     
-    # Якщо офлайн менше 2 хвилин — мовчимо
-    if offline_since is None or datetime.now() - offline_since < timedelta(minutes=2):
+    # Якщо офлайн менше 3 хвилин — мовчимо
+    if offline_since is None or datetime.now() - offline_since < timedelta(minutes=3):
         return
 
     chat_id = event.chat_id
